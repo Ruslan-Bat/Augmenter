@@ -58,13 +58,7 @@ class ImageViewer(QMainWindow):
         # Create a tab widget and place the viewer into the second tab
         self._tab_widget = QTabWidget()
 
-        # First tab: placeholder
-        tab1 = QWidget()
-        tab1_layout = QVBoxLayout()
-        tab1_layout.addWidget(QLabel("Placeholder Tab 1"))
-        tab1.setLayout(tab1_layout)
-
-        # Second tab: contains a toggle and the viewer (scroll area)
+        # Viewer tab: contains a toggle and the viewer (scroll area)
         tab2 = QWidget()
         tab2_layout = QVBoxLayout()
         top_row = QHBoxLayout()
@@ -89,7 +83,6 @@ class ImageViewer(QMainWindow):
         tab2_layout.addLayout(bottom_row)
         tab2.setLayout(tab2_layout)
 
-        self._tab_widget.addTab(tab1, "Tab 1")
         self._tab_widget.addTab(tab2, "Viewer")
 
         # Third tab: Mass Processing
@@ -127,12 +120,41 @@ class ImageViewer(QMainWindow):
         # Spacer
         tab3_layout.addStretch()
 
-        # Description field (required)
-        desc_label = QLabel("Description (required):")
-        tab3_layout.addWidget(desc_label)
-        self._mass_description = QTextEdit()
-        self._mass_description.setFixedHeight(80)
-        tab3_layout.addWidget(self._mass_description)
+        # (No description field here; Mass Processing only needs
+        # source/destination selectors and the Create button.)
+
+        # Augmentation methods selector (scrollable list of checkboxes)
+        aug_label = QLabel("Available augmentations:")
+        tab3_layout.addWidget(aug_label)
+
+        self._aug_scroll = QScrollArea()
+        self._aug_scroll.setWidgetResizable(True)
+        aug_container = QWidget()
+        self._aug_layout = QVBoxLayout()
+        aug_container.setLayout(self._aug_layout)
+        self._aug_scroll.setWidget(aug_container)
+        # set a reasonable max height so many options can be scrolled
+        self._aug_scroll.setFixedHeight(220)
+        tab3_layout.addWidget(self._aug_scroll)
+
+        # Placeholder: dynamically load available augmentations from package
+        # For now, populate with a stub list of methods
+        self._aug_checkboxes = []
+        def _load_placeholder_methods(n=10):
+            methods = []
+            for i in range(1, n + 1):
+                methods.append((f"method_{i}", f"Method {i}", f"Description for method {i}"))
+            return methods
+
+        self._available_methods = _load_placeholder_methods(12)
+        for mid, name, descr in self._available_methods:
+            cb = QCheckBox(f"{name}: {descr}")
+            cb.setObjectName(mid)
+            self._aug_layout.addWidget(cb)
+            self._aug_checkboxes.append(cb)
+
+        # spacer below checkbox list
+        self._aug_layout.addStretch()
 
         # Create dataset button
         create_row = QHBoxLayout()
@@ -442,11 +464,58 @@ class ImageViewer(QMainWindow):
             dialog.setDefaultSuffix("jpg")
 
     def _save_info(self):
-        """Save description and image path to info.xls (CSV formatted)."""
+        """Save description and image path to info.xls (CSV formatted).
+
+        Copies the current image into the project's Images folder (if not
+        already there) and writes the path relative to Images into info.xls.
+        """
         desc = self._description_edit.toPlainText().strip()
         img_path = getattr(self, '_current_file', '') or self.windowFilePath() or ''
+
+        if not img_path or not os.path.exists(img_path):
+            QMessageBox.information(self, 'Error', 'No image to save')
+            return
+
+        images_root = os.path.join(self._project_root, 'Images')
+        os.makedirs(images_root, exist_ok=True)
+
+        # determine destination path inside Images; if already inside Images, keep it
+        try:
+            img_abs = os.path.abspath(img_path)
+            imgs_abs = os.path.abspath(images_root)
+            inside_images = False
+            try:
+                inside_images = (os.path.commonpath([img_abs, imgs_abs]) == imgs_abs)
+            except ValueError:
+                # different drives on Windows -> not inside Images
+                inside_images = False
+
+            if inside_images:
+                dest = img_abs
+            else:
+                base = os.path.basename(img_abs)
+                dest = os.path.join(images_root, base)
+                if os.path.exists(dest):
+                    name, ext = os.path.splitext(base)
+                    counter = 1
+                    while True:
+                        alt = os.path.join(images_root, f"{name}_{counter}{ext}")
+                        if not os.path.exists(alt):
+                            dest = alt
+                            break
+                        counter += 1
+                shutil.copy2(img_abs, dest)
+        except Exception as e:
+            QMessageBox.information(self, 'Error', f'Copy failed: {e}')
+            return
+
+        # path to store in CSV: relative to Images folder
+        try:
+            rel_path = os.path.relpath(dest, images_root).replace('\\', '/')
+        except Exception:
+            rel_path = os.path.basename(dest)
+
         info_path = os.path.join(self._project_root, 'info.xls')
-        # load existing rows (if any)
         rows = []
         header = ['index', 'path', 'description']
         try:
@@ -456,19 +525,18 @@ class ImageViewer(QMainWindow):
                     if reader:
                         header = reader[0]
                         rows = reader[1:]
-        except Exception as e:
-            QMessageBox.information(self, 'Error', f'Cannot read {info_path}: {e}')
-            return
+        except Exception:
+            # non-fatal: continue with empty rows
+            rows = []
 
-        # search for existing entry for this image
+        # search for existing entry for this image (compare against dest)
+        img_for_match = dest
         found = False
         for r in rows:
             if len(r) < 2:
                 continue
             existing_path = r[1]
-            if self._paths_match(existing_path, img_path):
-                # update description
-                # ensure row has at least 3 columns
+            if self._paths_match(existing_path, img_for_match):
                 while len(r) < 3:
                     r.append('')
                 r[2] = desc
@@ -477,24 +545,21 @@ class ImageViewer(QMainWindow):
 
         try:
             if found:
-                # rewrite whole file with updated rows
                 with open(info_path, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     writer.writerow(header)
                     for i, r in enumerate(rows, start=1):
-                        # ensure index column is present and reasonable
-                        if len(r) >= 1 and r[0].strip():
+                        if len(r) >= 1 and str(r[0]).strip():
                             idx = r[0]
                         else:
                             idx = i
                         row_to_write = [idx] + r[1:]
                         writer.writerow(row_to_write)
             else:
-                # append new row, compute next index
                 next_index = 1
                 if rows:
                     try:
-                        existing_indexes = [int(r[0]) for r in rows if r and r[0].isdigit()]
+                        existing_indexes = [int(r[0]) for r in rows if r and str(r[0]).isdigit()]
                         if existing_indexes:
                             next_index = max(existing_indexes) + 1
                         else:
@@ -502,14 +567,12 @@ class ImageViewer(QMainWindow):
                     except Exception:
                         next_index = len(rows) + 1
 
-                # if file didn't exist, create and write header first
                 write_header = not os.path.exists(info_path)
-                mode = 'a'
-                with open(info_path, mode, newline='', encoding='utf-8') as f:
+                with open(info_path, 'a', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     if write_header:
                         writer.writerow(header)
-                    writer.writerow([next_index, img_path, desc])
+                    writer.writerow([next_index, rel_path, desc])
         except Exception as e:
             QMessageBox.information(self, 'Error', f'Cannot write to {info_path}: {e}')
             return
@@ -531,11 +594,6 @@ class ImageViewer(QMainWindow):
             self._dst_lineedit.setText(d)
 
     def _create_dataset(self):
-        desc = self._mass_description.toPlainText().strip()
-        if not desc:
-            QMessageBox.information(self, 'No description', 'No description')
-            return
-
         src = self._src_lineedit.text().strip()
         dst = self._dst_lineedit.text().strip() or src
 
@@ -549,20 +607,6 @@ class ImageViewer(QMainWindow):
             QMessageBox.information(self, 'Error', f'Copy failed: {e}')
             return
 
-        # append info.xls with one row per image (path relative to Images folder)
-        info_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'info.xls')
-        rows = []
-        header = ['index', 'path', 'description']
-        try:
-            if os.path.exists(info_path):
-                with open(info_path, 'r', newline='', encoding='utf-8') as f:
-                    reader = list(csv.reader(f))
-                    if reader:
-                        header = reader[0]
-                        rows = reader[1:]
-        except Exception:
-            pass
-
         # only process files that were actually copied in this operation
         image_files = copied_files if copied_files is not None else []
 
@@ -570,39 +614,40 @@ class ImageViewer(QMainWindow):
             QMessageBox.information(self, 'No images', 'No image files found in the destination')
             return
 
-        # determine starting index
-        next_index = 1
-        if rows:
-            try:
-                existing_indexes = [int(r[0]) for r in rows if r and r[0].isdigit()]
-                if existing_indexes:
-                    next_index = max(existing_indexes) + 1
-                else:
-                    next_index = len(rows) + 1
-            except Exception:
-                next_index = len(rows) + 1
+        # determine which augmentation methods are selected
+        selected_methods = [cb.objectName() for cb in getattr(self, '_aug_checkboxes', []) if cb.isChecked()]
 
-        images_root = os.path.join(self._project_root, 'Images')
-        # Append a new row for each image (do not check for existing similar images)
-        write_header = not os.path.exists(info_path)
-        try:
-            with open(info_path, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow(header)
-                for img in image_files:
+        # if any method selected, simulate augmentation by duplicating files
+        augmented_files = []
+        if selected_methods:
+            for img in list(image_files):
+                base_dir = os.path.dirname(img)
+                fname = os.path.basename(img)
+                name, ext = os.path.splitext(fname)
+                for m in selected_methods:
+                    new_name = f"{name}_{m}{ext}"
+                    target = os.path.join(base_dir, new_name)
+                    # avoid clobbering existing files by adding numeric suffix
+                    if os.path.exists(target):
+                        counter = 1
+                        while True:
+                            alt = os.path.join(base_dir, f"{name}_{m}_{counter}{ext}")
+                            if not os.path.exists(alt):
+                                target = alt
+                                break
+                            counter += 1
                     try:
-                        rel = os.path.relpath(img, images_root).replace('\\', '/')
+                        shutil.copy2(img, target)
+                        augmented_files.append(target)
                     except Exception:
-                        rel = os.path.relpath(img, self._project_root).replace('\\', '/')
-                    writer.writerow([next_index, rel, desc])
-                    next_index += 1
-        except Exception as e:
-            QMessageBox.information(self, 'Error', f'Cannot write to {info_path}: {e}')
-            return
+                        # non-fatal: skip augmentation if copy fails
+                        continue
 
-        QMessageBox.information(self, 'Success', f'Dataset created at {dst}')
-        self._mass_description.clear()
+        # include augmented files in the set for reporting
+        if augmented_files:
+            image_files = image_files + augmented_files
+
+        QMessageBox.information(self, 'Success', f'Dataset created at {dst} (files: {len(image_files)}, augmented: {len(augmented_files)})')
 
     def _copy_dir_contents(self, src, dst):
         os.makedirs(dst, exist_ok=True)
