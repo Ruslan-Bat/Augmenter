@@ -2,6 +2,9 @@ from __future__ import annotations
 import os
 import csv
 import shutil
+import subprocess
+import sys
+import json
 
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
@@ -71,6 +74,15 @@ class ImageViewer(QMainWindow):
         top_row.addStretch()
         tab2_layout.addLayout(top_row)
         tab2_layout.addWidget(self._scroll_area)
+        # Search row: input + button
+        search_row = QHBoxLayout()
+        self._search_input = QLineEdit()
+        self._search_input.setPlaceholderText("Поиск по описанию...")
+        self._search_btn = QPushButton("Поиск")
+        self._search_btn.clicked.connect(self._search_by_description)
+        search_row.addWidget(self._search_input)
+        search_row.addWidget(self._search_btn)
+        tab2_layout.addLayout(search_row)
         # Bottom: description field and save button
         bottom_row = QHBoxLayout()
         self._description_edit = QTextEdit()
@@ -195,7 +207,7 @@ class ImageViewer(QMainWindow):
         # remember current file path for saving metadata
         self._current_file = fileName
 
-        # try to load existing description from info.xls
+        # try to load existing description from info.csv
         try:
             self._load_description_for_current_file()
         except Exception:
@@ -464,7 +476,7 @@ class ImageViewer(QMainWindow):
             dialog.setDefaultSuffix("jpg")
 
     def _save_info(self):
-        """Save description and image path to info.xls (CSV formatted).
+        """Save description and image path to info.csv (CSV formatted).
 
         Copies the current image into the project's Images folder (if not
         already there) and writes the path relative to Images into info.xls.
@@ -515,13 +527,13 @@ class ImageViewer(QMainWindow):
         except Exception:
             rel_path = os.path.basename(dest)
 
-        info_path = os.path.join(self._project_root, 'info.xls')
+        info_path = os.path.join(self._project_root, 'info.csv')
         rows = []
         header = ['index', 'path', 'description']
         try:
             if os.path.exists(info_path):
                 with open(info_path, 'r', newline='', encoding='utf-8') as f:
-                    reader = list(csv.reader(f))
+                    reader = list(csv.reader(f, delimiter=';'))
                     if reader:
                         header = reader[0]
                         rows = reader[1:]
@@ -546,7 +558,7 @@ class ImageViewer(QMainWindow):
         try:
             if found:
                 with open(info_path, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
+                    writer = csv.writer(f, delimiter=';')
                     writer.writerow(header)
                     for i, r in enumerate(rows, start=1):
                         if len(r) >= 1 and str(r[0]).strip():
@@ -569,7 +581,7 @@ class ImageViewer(QMainWindow):
 
                 write_header = not os.path.exists(info_path)
                 with open(info_path, 'a', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
+                    writer = csv.writer(f, delimiter=';')
                     if write_header:
                         writer.writerow(header)
                     writer.writerow([next_index, rel_path, desc])
@@ -579,6 +591,49 @@ class ImageViewer(QMainWindow):
 
         self.statusBar().showMessage(f'Записано в {info_path}')
         self._description_edit.clear()
+
+    @pyqtSlot()
+    def _search_by_description(self):
+        query = self._search_input.text().strip()
+        if not query:
+            QMessageBox.information(self, 'Error', 'Введите текст для поиска')
+            return
+
+        # call the top-level Find_image.py script and parse JSON output
+        script = os.path.join(self._project_root, 'Find_image.py')
+        if not os.path.exists(script):
+            QMessageBox.information(self, 'Error', f'Не найден {script}')
+            return
+
+        try:
+            proc = subprocess.run([sys.executable, script, query], cwd=self._project_root,
+                                  capture_output=True, text=True, timeout=30)
+            out = proc.stdout.strip()
+            try:
+                paths = json.loads(out) if out else []
+            except Exception:
+                paths = []
+            # debug prints
+            print(f"DEBUG: subprocess returncode={proc.returncode}")
+            print("DEBUG: subprocess stdout:")
+            print(out)
+            print("DEBUG: subprocess stderr:")
+            print(proc.stderr)
+        except Exception as e:
+            QMessageBox.information(self, 'Error', f'Ошибка поиска: {e}')
+            return
+
+        if not paths:
+            QMessageBox.information(self, 'Ничего не найдено', 'Ничего не найдено. Попробуй изменить запрос')
+            return
+
+        # open first result
+        path = paths[0]
+        if not os.path.exists(path):
+            QMessageBox.information(self, 'Error', f'Файл не найден: {path}')
+            return
+
+        self.load_file(path)
 
     def _choose_source_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Select source directory", self._project_root)
@@ -707,8 +762,8 @@ class ImageViewer(QMainWindow):
         return False
 
     def _load_description_for_current_file(self):
-        """Load description from info.xls for the current image, if present."""
-        info_path = os.path.join(os.getcwd(), 'info.xls')
+        """Load description from info.csv for the current image, if present."""
+        info_path = os.path.join(self._project_root, 'info.csv')
         if not os.path.exists(info_path):
             # nothing to load
             self._description_edit.clear()
@@ -716,7 +771,7 @@ class ImageViewer(QMainWindow):
 
         try:
             with open(info_path, 'r', newline='', encoding='utf-8') as f:
-                reader = list(csv.reader(f))
+                reader = list(csv.reader(f, delimiter=';'))
         except Exception:
             # ignore read errors
             return

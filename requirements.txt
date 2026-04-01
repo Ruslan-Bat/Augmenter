@@ -1,1 +1,4 @@
 PyQt5>=5.15
+numpy>=1.19
+opencv-python>=4.5
+pandas>=1.2
