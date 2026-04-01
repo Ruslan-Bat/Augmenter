@@ -502,21 +502,14 @@ class ImageViewer(QMainWindow):
                 # different drives on Windows -> not inside Images
                 inside_images = False
 
+            base = os.path.basename(img_abs)
+            dest = os.path.join(images_root, base)
+            # If image already is inside Images folder, keep it; otherwise, we'll copy later if needed
             if inside_images:
                 dest = img_abs
-            else:
-                base = os.path.basename(img_abs)
-                dest = os.path.join(images_root, base)
-                if os.path.exists(dest):
-                    name, ext = os.path.splitext(base)
-                    counter = 1
-                    while True:
-                        alt = os.path.join(images_root, f"{name}_{counter}{ext}")
-                        if not os.path.exists(alt):
-                            dest = alt
-                            break
-                        counter += 1
-                shutil.copy2(img_abs, dest)
+        except Exception as e:
+            QMessageBox.information(self, 'Error', f'Copy failed: {e}')
+            return
         except Exception as e:
             QMessageBox.information(self, 'Error', f'Copy failed: {e}')
             return
@@ -528,65 +521,112 @@ class ImageViewer(QMainWindow):
             rel_path = os.path.basename(dest)
 
         info_path = os.path.join(self._project_root, 'info.csv')
-        rows = []
-        header = ['index', 'path', 'description']
-        try:
-            if os.path.exists(info_path):
+
+        # helper: check whether rel_path exists in info.csv
+        def _image_in_info(rel):
+            if not os.path.exists(info_path):
+                return False
+            try:
                 with open(info_path, 'r', newline='', encoding='utf-8') as f:
-                    reader = list(csv.reader(f, delimiter=';'))
-                    if reader:
-                        header = reader[0]
-                        rows = reader[1:]
-        except Exception:
-            # non-fatal: continue with empty rows
-            rows = []
+                    reader = csv.reader(f, delimiter=';')
+                    rows = list(reader)
+            except Exception:
+                return False
+            for r in rows[1:]:
+                if len(r) >= 2 and r[1] == rel:
+                    return True
+            return False
 
-        # search for existing entry for this image (compare against dest)
-        img_for_match = dest
-        found = False
-        for r in rows:
-            if len(r) < 2:
-                continue
-            existing_path = r[1]
-            if self._paths_match(existing_path, img_for_match):
-                while len(r) < 3:
-                    r.append('')
-                r[2] = desc
-                found = True
-                break
+        def _update_description(rel, new_desc):
+            # read, update matching row, write back
+            try:
+                rows = []
+                with open(info_path, 'r', newline='', encoding='utf-8') as f:
+                    reader = csv.reader(f, delimiter=';')
+                    rows = list(reader)
+            except Exception:
+                return False
+            header = rows[0] if rows else ['index', 'path', 'description']
+            updated = False
+            for i in range(1, len(rows)):
+                if len(rows[i]) >= 2 and rows[i][1] == rel:
+                    while len(rows[i]) < 3:
+                        rows[i].append('')
+                    rows[i][2] = new_desc
+                    updated = True
+                    break
+            if updated:
+                try:
+                    with open(info_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f, delimiter=';')
+                        writer.writerow(header)
+                        for r in rows[1:]:
+                            # handle missing index
+                            if r and str(r[0]).strip():
+                                idx = r[0]
+                            else:
+                                idx = ''
+                            row_to_write = [idx] + r[1:]
+                            writer.writerow(row_to_write)
+                    return True
+                except Exception:
+                    return False
+            return False
+
+        exists = _image_in_info(rel_path)
 
         try:
-            if found:
-                with open(info_path, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f, delimiter=';')
-                    writer.writerow(header)
-                    for i, r in enumerate(rows, start=1):
-                        if len(r) >= 1 and str(r[0]).strip():
-                            idx = r[0]
-                        else:
-                            idx = i
-                        row_to_write = [idx] + r[1:]
-                        writer.writerow(row_to_write)
+            if exists:
+                # update description only
+                ok = _update_description(rel_path, desc)
+                if not ok:
+                    QMessageBox.information(self, 'Error', f'Не удалось обновить {info_path}')
+                    return
             else:
-                next_index = 1
-                if rows:
+                # copy image into Images (may overwrite existing file of same name)
+                try:
+                    if not inside_images:
+                        shutil.copy2(img_abs, dest)
+                except Exception as e:
+                    QMessageBox.information(self, 'Error', f'Copy failed: {e}')
+                    return
+
+                # append new row
+                rows = []
+                header = ['index', 'path', 'description']
+                if os.path.exists(info_path):
                     try:
-                        existing_indexes = [int(r[0]) for r in rows if r and str(r[0]).isdigit()]
+                        with open(info_path, 'r', newline='', encoding='utf-8') as f:
+                            reader = csv.reader(f, delimiter=';')
+                            rows = list(reader)
+                            if rows:
+                                header = rows[0]
+                    except Exception:
+                        rows = []
+
+                next_index = 1
+                if rows and len(rows) > 1:
+                    try:
+                        existing_indexes = [int(r[0]) for r in rows[1:] if r and str(r[0]).isdigit()]
                         if existing_indexes:
                             next_index = max(existing_indexes) + 1
                         else:
-                            next_index = len(rows) + 1
+                            next_index = len(rows)
                     except Exception:
-                        next_index = len(rows) + 1
+                        next_index = len(rows)
 
                 write_header = not os.path.exists(info_path)
-                with open(info_path, 'a', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f, delimiter=';')
-                    if write_header:
-                        writer.writerow(header)
-                    writer.writerow([next_index, rel_path, desc])
+                try:
+                    with open(info_path, 'a', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f, delimiter=';')
+                        if write_header:
+                            writer.writerow(header)
+                        writer.writerow([next_index, rel_path, desc])
+                except Exception as e:
+                    QMessageBox.information(self, 'Error', f'Cannot write to {info_path}: {e}')
+                    return
         except Exception as e:
-            QMessageBox.information(self, 'Error', f'Cannot write to {info_path}: {e}')
+            QMessageBox.information(self, 'Error', f'Ошибка при обновлении info: {e}')
             return
 
         self.statusBar().showMessage(f'Записано в {info_path}')
