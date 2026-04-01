@@ -158,16 +158,24 @@ class ImageViewer(QMainWindow):
         self._aug_scroll.setFixedHeight(220)
         tab3_layout.addWidget(self._aug_scroll)
 
-        # Placeholder: dynamically load available augmentations from package
-        # For now, populate with a stub list of methods
+        # Dynamically load available augmentations from package `augmenters`
         self._aug_checkboxes = []
-        def _load_placeholder_methods(n=10):
-            methods = []
-            for i in range(1, n + 1):
-                methods.append((f"method_{i}", f"Method {i}", f"Description for method {i}"))
-            return methods
+        try:
+            # try to import package `augmenters` (stub or real)
+            import augmenters
+            methods = augmenters.get_methods()
+            if not methods:
+                raise RuntimeError('no methods')
+            self._available_methods = methods
+        except Exception:
+            # fallback placeholder
+            def _load_placeholder_methods(n=12):
+                methods = []
+                for i in range(1, n + 1):
+                    methods.append((f"method_{i}", f"Method {i}", f"Description for method {i}"))
+                return methods
+            self._available_methods = _load_placeholder_methods(12)
 
-        self._available_methods = _load_placeholder_methods(12)
         for mid, name, descr in self._available_methods:
             cb = QCheckBox(f"{name}: {descr}")
             cb.setObjectName(mid)
