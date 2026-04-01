@@ -83,6 +83,15 @@ class ImageViewer(QMainWindow):
         search_row.addWidget(self._search_input)
         search_row.addWidget(self._search_btn)
         tab2_layout.addLayout(search_row)
+        # Path search row: input + button
+        search_path_row = QHBoxLayout()
+        self._search_path_input = QLineEdit()
+        self._search_path_input.setPlaceholderText("Поиск по пути (абсолютный или относительный от Images)")
+        self._search_path_btn = QPushButton("Поиск по пути")
+        self._search_path_btn.clicked.connect(self._search_by_path)
+        search_path_row.addWidget(self._search_path_input)
+        search_path_row.addWidget(self._search_path_btn)
+        tab2_layout.addLayout(search_path_row)
         # Bottom: description field and save button
         bottom_row = QHBoxLayout()
         self._description_edit = QTextEdit()
@@ -674,6 +683,45 @@ class ImageViewer(QMainWindow):
             return
 
         self.load_file(path)
+
+    @pyqtSlot()
+    def _search_by_path(self):
+        raw = self._search_path_input.text().strip()
+        if not raw:
+            QMessageBox.information(self, 'Error', 'Введите путь для поиска')
+            return
+
+        # normalize
+        candidate = os.path.expanduser(raw)
+        candidate = os.path.normpath(candidate)
+
+        candidates = []
+        # absolute
+        if os.path.isabs(candidate):
+            candidates.append(candidate)
+        else:
+            # direct relative to project
+            candidates.append(os.path.join(self._project_root, candidate))
+            # relative inside Images folder
+            candidates.append(os.path.join(self._project_root, 'Images', candidate))
+            # also try if user provided a path starting with 'Images' already
+            if candidate.lower().startswith('images' + os.sep.lower()):
+                candidates.append(os.path.join(self._project_root, candidate[len('Images'+os.sep):]))
+
+        found = None
+        for p in candidates:
+            try:
+                if os.path.exists(p) and os.path.isfile(p):
+                    found = p
+                    break
+            except Exception:
+                continue
+
+        if not found:
+            QMessageBox.information(self, 'Ничего не найдено', 'Ничего не найдено. Попробуйте еще раз')
+            return
+
+        self.load_file(found)
 
     def _choose_source_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Select source directory", self._project_root)
