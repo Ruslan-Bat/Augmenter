@@ -161,20 +161,23 @@ class ImageViewer(QMainWindow):
         # Dynamically load available augmentations from package `augmenters`
         self._aug_checkboxes = []
         try:
-            # try to import package `augmenters` (stub or real)
-            import augmenters
-            methods = augmenters.get_methods()
-            if not methods:
-                raise RuntimeError('no methods')
-            self._available_methods = methods
-        except Exception:
-            # fallback placeholder
-            def _load_placeholder_methods(n=12):
-                methods = []
-                for i in range(1, n + 1):
-                    methods.append((f"method_{i}", f"Method {i}", f"Description for method {i}"))
-                return methods
-            self._available_methods = _load_placeholder_methods(12)
+            # try to use our Methods.AugmentationManager to list effects
+            from Methods import AugmentationManager
+            print('imageviewer: creating AugmentationManager')
+            mgr = AugmentationManager()
+            print('imageviewer: calling list_effects_for_ui()')
+            methods = mgr.list_effects_for_ui()
+            print(f'imageviewer: list_effects_for_ui returned {len(methods)} items')
+            # keep manager for later batch processing (even if list is empty)
+            self._augmentation_manager = mgr
+            # If methods is empty, do not add any checkboxes
+            self._available_methods = methods if methods else []
+        except Exception as e:
+            print('imageviewer: Exception while initializing AugmentationManager:')
+            import traceback
+            print(traceback.format_exc())
+            # on error, do not populate any checkboxes
+            self._available_methods = []
 
         for mid, name, descr in self._available_methods:
             cb = QCheckBox(f"{name}: {descr}")
@@ -752,53 +755,33 @@ class ImageViewer(QMainWindow):
             QMessageBox.information(self, 'Error', 'Source directory is not valid')
             return
 
-        try:
-            copied_files = self._copy_dir_contents(src, dst)
-        except Exception as e:
-            QMessageBox.information(self, 'Error', f'Copy failed: {e}')
-            return
-
-        # only process files that were actually copied in this operation
-        image_files = copied_files if copied_files is not None else []
-
-        if not image_files:
-            QMessageBox.information(self, 'No images', 'No image files found in the destination')
-            return
-
         # determine which augmentation methods are selected
         selected_methods = [cb.objectName() for cb in getattr(self, '_aug_checkboxes', []) if cb.isChecked()]
 
-        # if any method selected, simulate augmentation by duplicating files
-        augmented_files = []
-        if selected_methods:
-            for img in list(image_files):
-                base_dir = os.path.dirname(img)
-                fname = os.path.basename(img)
-                name, ext = os.path.splitext(fname)
-                for m in selected_methods:
-                    new_name = f"{name}_{m}{ext}"
-                    target = os.path.join(base_dir, new_name)
-                    # avoid clobbering existing files by adding numeric suffix
-                    if os.path.exists(target):
-                        counter = 1
-                        while True:
-                            alt = os.path.join(base_dir, f"{name}_{m}_{counter}{ext}")
-                            if not os.path.exists(alt):
-                                target = alt
-                                break
-                            counter += 1
-                    try:
-                        shutil.copy2(img, target)
-                        augmented_files.append(target)
-                    except Exception:
-                        # non-fatal: skip augmentation if copy fails
-                        continue
+        # If no methods selected, just copy source -> destination (preserve originals in source)
+        if not selected_methods:
+            try:
+                copied_files = self._copy_dir_contents(src, dst)
+            except Exception as e:
+                QMessageBox.information(self, 'Error', f'Copy failed: {e}')
+                return
 
-        # include augmented files in the set for reporting
-        if augmented_files:
-            image_files = image_files + augmented_files
+            if not copied_files:
+                QMessageBox.information(self, 'No images', 'No image files found in the source')
+                return
 
-        QMessageBox.information(self, 'Success', f'Dataset created at {dst} (files: {len(image_files)}, augmented: {len(augmented_files)})')
+            QMessageBox.information(self, 'Success', f'Dataset created at {dst} (files: {len(copied_files)}, augmented: 0)')
+            return
+
+        # methods selected -> perform batch augmentation from src -> dst
+        mgr = getattr(self, '_augmentation_manager', None)
+        if not mgr:
+            QMessageBox.information(self, 'Error', 'Augmentation manager not available')
+            return
+
+        status, augmented_count = mgr.batch_augment(src, dst, selected_methods)
+        # show single notification with augmented count
+        QMessageBox.information(self, 'Augmentation result', f'{status}\nАугментированных изображений: {augmented_count}')
 
     def _copy_dir_contents(self, src, dst):
         os.makedirs(dst, exist_ok=True)

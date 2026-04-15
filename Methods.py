@@ -1,0 +1,208 @@
+import os
+from typing import List, Tuple
+
+import cv2
+import traceback
+try:
+    from Project.augmentations_library.Loader import ImageLoader, NoiseLoader
+except Exception:
+    try:
+        from Project.augmentations_library.Loader import ImageLoader, NoiseLoader
+    except Exception:
+        # last resort: add Project folder to path
+        import sys
+        import os as _os
+        sys.path.insert(0, _os.path.join(os.path.dirname(__file__), 'Project'))
+        try:
+            from augmentations_library.Loader import ImageLoader, NoiseLoader
+        except Exception:
+            # rethrow with context
+            print('Methods.py: failed to import ImageLoader/NoiseLoader')
+            print(traceback.format_exc())
+            raise
+
+
+class AugmentationManager:
+    """Утилитарный класс для получения списка эффектов и пакетной аугментации.
+
+    Использует `augmentations_library.Loader.NoiseLoader` и `ImageLoader`.
+    """
+
+    def __init__(self, library_name: str = 'augmentations_library.Effects'):
+        self.library_name = library_name
+        self.noise_loader = NoiseLoader(library_name=self.library_name)
+
+    def list_effects_for_ui(self) -> List[Tuple[str, str, str]]:
+        """Возвращает список кортежей (id, label, description) для UI.
+
+        id: строковое имя класса (используется как идентификатор)
+        label: читаемое имя (если есть attribute `display_name`, берётся он, иначе имя класса)
+        description: первая строка docstring класса или пустая строка
+        """
+        results = []
+        print(f"AugmentationManager: listing effects from library '{self.library_name}'")
+        # try several candidate module names to account for running from project root
+        candidates = [self.library_name,
+                      f"Project.{self.library_name}",
+                      'augmentations_library',
+                      'Project.augmentations_library',
+                      'Project.augmentations_library.Effects']
+        names = None
+        for cand in candidates:
+            try:
+                print(f"AugmentationManager: trying library candidate '{cand}'")
+                self.noise_loader.library_name = cand
+                names = self.noise_loader.list_available()
+                print(f"AugmentationManager: candidate '{cand}' returned {len(names)} items")
+                # keep candidate that worked
+                self.library_name = cand
+                break
+            except Exception:
+                print(f"AugmentationManager: candidate '{cand}' failed:")
+                print(traceback.format_exc())
+                names = None
+                continue
+        if names is None:
+            print('AugmentationManager: no working library candidate found')
+            return []
+
+        # динамически импортим класс объекты
+        for cls_name in names:
+            try:
+                print(f"AugmentationManager: loading class '{cls_name}'")
+                cls = self.noise_loader.load_class(cls_name)
+                label = getattr(cls, 'display_name', cls.__name__)
+                doc = (cls.__doc__ or '').strip().splitlines()
+                descr = doc[0] if doc else ''
+                results.append((cls_name, label, descr))
+            except Exception:
+                print(f"AugmentationManager: failed to load class '{cls_name}':")
+                print(traceback.format_exc())
+                continue
+        print(f"AugmentationManager: returning {len(results)} usable effects")
+        return results
+
+    def batch_augment(self, src_dir: str, dst_dir: str, methods: List[str]) -> str:
+        """Пакетно обрабатывает изображения из `src_dir` и сохраняет в `dst_dir`.
+
+        `methods` - список имён классов эффектов (как возвращает `list_effects_for_ui`).
+        Возвращает русскоязычную строку с результатом.
+        """
+        if not os.path.isdir(src_dir):
+            return "Ошибка, попробуйте еще раз"
+        os.makedirs(dst_dir, exist_ok=True)
+
+        img_loader = ImageLoader()
+        errors = False
+        saved_count = 0
+
+        exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
+        files = []
+        for root, _, filenames in os.walk(src_dir):
+            for f in filenames:
+                if os.path.splitext(f)[1].lower() in exts:
+                    files.append(os.path.join(root, f))
+
+        if not files:
+            return "Ошибка, попробуйте еще раз", 0
+
+        # create staging directory for atomic behavior: don't write to dst until all succeed
+        import tempfile
+        staging_root = tempfile.mkdtemp(prefix='augment_staging_')
+
+        # process files and write outputs to staging
+        for fpath in files:
+            try:
+                img = img_loader.load(fpath)
+                if img is None:
+                    errors = True
+                    # abort early: cleanup staging and return
+                    errors = True
+                    break
+
+                applied_names = []
+                # применяем эффекты последовательно; abort on any failure
+                for m in methods:
+                    try:
+                        effect = self.noise_loader.create(m)
+                    except Exception:
+                        print(f"AugmentationManager: failed to create effect '{m}' for file '{fpath}':")
+                        print(traceback.format_exc())
+                        errors = True
+                        break
+                    try:
+                        img = effect.apply(img)
+                        applied_names.append(m)
+                    except Exception:
+                        print(f"AugmentationManager: effect '{m}' failed during apply for file '{fpath}':")
+                        print(traceback.format_exc())
+                        errors = True
+                        break
+
+                if errors:
+                    # abort processing
+                    break
+
+                # ensure at least one effect applied; otherwise consider as failure
+                if not applied_names:
+                    print(f"AugmentationManager: no effects applied for file '{fpath}'")
+                    errors = True
+                    break
+
+                # сохраняем итоговое изображение в staging
+                rel_dir = os.path.relpath(os.path.dirname(fpath), src_dir)
+                staging_dir = os.path.join(staging_root, rel_dir) if rel_dir != '.' else staging_root
+                os.makedirs(staging_dir, exist_ok=True)
+
+                base = os.path.splitext(os.path.basename(fpath))[0]
+                ext = os.path.splitext(fpath)[1]
+                # save with same base name to keep count == input count
+                target = os.path.join(staging_dir, f"{base}{ext}")
+                try:
+                    img_loader.save(target, img)
+                    saved_count += 1
+                except Exception:
+                    print(f"AugmentationManager: failed to save augmented image for '{fpath}':")
+                    print(traceback.format_exc())
+                    errors = True
+                    break
+            except Exception:
+                print(f"AugmentationManager: unexpected error processing '{fpath}':")
+                print(traceback.format_exc())
+                errors = True
+                break
+
+        # if any errors, cleanup staging and return error with 0 saved
+        import shutil
+        if errors:
+            try:
+                shutil.rmtree(staging_root)
+            except Exception:
+                pass
+            return "Ошибка, попробуйте еще раз", 0
+
+        # all succeeded -> move staging contents into dst
+        for root, _, filenames in os.walk(staging_root):
+            rel = os.path.relpath(root, staging_root)
+            target_root = os.path.join(dst_dir, rel) if rel != '.' else dst_dir
+            os.makedirs(target_root, exist_ok=True)
+            for f in filenames:
+                s = os.path.join(root, f)
+                t = os.path.join(target_root, f)
+                # if target exists, overwrite
+                try:
+                    shutil.move(s, t)
+                except Exception:
+                    try:
+                        shutil.copy2(s, t)
+                    except Exception:
+                        print(f"AugmentationManager: failed to move {s} -> {t}")
+
+        # remove staging
+        try:
+            shutil.rmtree(staging_root)
+        except Exception:
+            pass
+
+        status = "Аугментация прошла успешно"
+        return status, saved_count
