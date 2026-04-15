@@ -2,7 +2,6 @@ import os
 from typing import List, Tuple
 
 import cv2
-import traceback
 import inspect
 try:
     from Project.augmentations_library.Loader import ImageLoader, NoiseLoader
@@ -17,9 +16,6 @@ except Exception:
         try:
             from Project.augmentations_library.Loader import ImageLoader, NoiseLoader
         except Exception:
-            # rethrow with context
-            print('Methods.py: failed to import ImageLoader/NoiseLoader')
-            print(traceback.format_exc())
             raise
 
 
@@ -41,7 +37,7 @@ class AugmentationManager:
         description: первая строка docstring класса или пустая строка
         """
         results = []
-        print(f"AugmentationManager: listing effects from library '{self.library_name}'")
+        # start listing effects
         # try several candidate module names to account for running from project root
         candidates = [self.library_name,
                       f"Project.{self.library_name}",
@@ -51,36 +47,27 @@ class AugmentationManager:
         names = None
         for cand in candidates:
             try:
-                print(f"AugmentationManager: trying library candidate '{cand}'")
                 self.noise_loader.library_name = cand
                 names = self.noise_loader.list_available()
-                print(f"AugmentationManager: candidate '{cand}' returned {len(names)} items")
                 # keep candidate that worked
                 self.library_name = cand
                 break
             except Exception:
-                print(f"AugmentationManager: candidate '{cand}' failed:")
-                print(traceback.format_exc())
                 names = None
                 continue
         if names is None:
-            print('AugmentationManager: no working library candidate found')
             return []
 
         # динамически импортим класс объекты
         for cls_name in names:
             try:
-                print(f"AugmentationManager: loading class '{cls_name}'")
                 cls = self.noise_loader.load_class(cls_name)
                 label = getattr(cls, 'display_name', cls.__name__)
                 doc = (cls.__doc__ or '').strip().splitlines()
                 descr = doc[0] if doc else ''
                 results.append((cls_name, label, descr))
             except Exception:
-                print(f"AugmentationManager: failed to load class '{cls_name}':")
-                print(traceback.format_exc())
                 continue
-        print(f"AugmentationManager: returning {len(results)} usable effects")
         return results
 
     def batch_augment(self, src_dir: str, dst_dir: str, methods: List[str]) -> str:
@@ -113,7 +100,6 @@ class AugmentationManager:
             loader_tmp = ImageLoader()
             img0 = loader_tmp.load(fpath)
             if img0 is None:
-                print(f"AugmentationManager: failed to load source image '{fpath}'")
                 return "Ошибка, попробуйте еще раз", 0
             originals.append((fpath, img0))
 
@@ -132,10 +118,7 @@ class AugmentationManager:
                 for m in methods:
                     try:
                         klass = self.noise_loader.load_class(m)
-                        print(f"AugmentationManager: loaded class for '{m}'")
                     except Exception:
-                        print(f"AugmentationManager: failed to load class '{m}' for file '{fpath}':")
-                        print(traceback.format_exc())
                         errors = True
                         break
 
@@ -154,8 +137,6 @@ class AugmentationManager:
                     try:
                         effect = klass(**kwargs) if kwargs else klass()
                     except Exception:
-                        print(f"AugmentationManager: failed to instantiate effect '{m}' with kwargs {kwargs} for file '{fpath}':")
-                        print(traceback.format_exc())
                         errors = True
                         break
 
@@ -163,8 +144,6 @@ class AugmentationManager:
                         img = effect.apply(img)
                         applied_names.append(m)
                     except Exception:
-                        print(f"AugmentationManager: effect '{m}' failed during apply for file '{fpath}':")
-                        print(traceback.format_exc())
                         errors = True
                         break
 
@@ -174,7 +153,6 @@ class AugmentationManager:
 
                 # ensure at least one effect applied; otherwise consider as failure
                 if not applied_names:
-                    print(f"AugmentationManager: no effects applied for file '{fpath}'")
                     errors = True
                     break
 
@@ -191,13 +169,9 @@ class AugmentationManager:
                     img_loader.save(target, img)
                     saved_count += 1
                 except Exception:
-                    print(f"AugmentationManager: failed to save augmented image for '{fpath}':")
-                    print(traceback.format_exc())
                     errors = True
                     break
             except Exception:
-                print(f"AugmentationManager: unexpected error processing '{fpath}':")
-                print(traceback.format_exc())
                 errors = True
                 break
 
@@ -225,7 +199,7 @@ class AugmentationManager:
                     try:
                         shutil.copy2(s, t)
                     except Exception:
-                        print(f"AugmentationManager: failed to move {s} -> {t}")
+                        pass
 
         # remove staging
         try:

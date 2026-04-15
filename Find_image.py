@@ -49,9 +49,8 @@ def main():
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             find_unique_images = getattr(mod, 'find_unique_images')
-        except Exception as e2:
+        except Exception:
             print(json.dumps([]))
-            print(f"DEBUG: failed importing find_unique_images: {e}; fallback error: {e2}", file=sys.stderr)
             return
 
     # read csv (semicolon separated as used by imageviewer)
@@ -59,7 +58,6 @@ def main():
         df = pd.read_csv(csv_path, sep=';', dtype=str, keep_default_na=False)
     except Exception as e:
         print(json.dumps([]))
-        print(f"DEBUG: failed reading CSV {csv_path}: {e}", file=sys.stderr)
         return
 
     # normalize columns to 'image' and 'caption'
@@ -73,14 +71,8 @@ def main():
     query = args.query
     if not query:
         print(json.dumps([]))
-        print("DEBUG: empty query", file=sys.stderr)
         return
-
-    # debug info
-    print(f"DEBUG: csv_path={csv_path}", file=sys.stderr)
-    print(f"DEBUG: images_root={images_root}", file=sys.stderr)
-    print(f"DEBUG: columns={list(df.columns)}", file=sys.stderr)
-    print(f"DEBUG: query={query}", file=sys.stderr)
+    
 
     try:
         results = find_unique_images(query, df, images_root, ssim_threshold=0.85, top_k=1)

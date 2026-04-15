@@ -163,19 +163,13 @@ class ImageViewer(QMainWindow):
         try:
             # try to use our Methods.AugmentationManager to list effects
             from Methods import AugmentationManager
-            print('imageviewer: creating AugmentationManager')
             mgr = AugmentationManager()
-            print('imageviewer: calling list_effects_for_ui()')
             methods = mgr.list_effects_for_ui()
-            print(f'imageviewer: list_effects_for_ui returned {len(methods)} items')
             # keep manager for later batch processing (even if list is empty)
             self._augmentation_manager = mgr
             # If methods is empty, do not add any checkboxes
             self._available_methods = methods if methods else []
-        except Exception as e:
-            print('imageviewer: Exception while initializing AugmentationManager:')
-            import traceback
-            print(traceback.format_exc())
+        except Exception:
             # on error, do not populate any checkboxes
             self._available_methods = []
 
@@ -673,12 +667,7 @@ class ImageViewer(QMainWindow):
                 paths = json.loads(out) if out else []
             except Exception:
                 paths = []
-            # debug prints
-            print(f"DEBUG: subprocess returncode={proc.returncode}")
-            print("DEBUG: subprocess stdout:")
-            print(out)
-            print("DEBUG: subprocess stderr:")
-            print(proc.stderr)
+            # silence debug output
         except Exception as e:
             QMessageBox.information(self, 'Error', f'Ошибка поиска: {e}')
             return
