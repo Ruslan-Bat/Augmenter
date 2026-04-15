@@ -3,6 +3,7 @@ from typing import List, Tuple
 
 import cv2
 import traceback
+import inspect
 try:
     from Project.augmentations_library.Loader import ImageLoader, NoiseLoader
 except Exception:
@@ -14,7 +15,7 @@ except Exception:
         import os as _os
         sys.path.insert(0, _os.path.join(os.path.dirname(__file__), 'Project'))
         try:
-            from augmentations_library.Loader import ImageLoader, NoiseLoader
+            from Project.augmentations_library.Loader import ImageLoader, NoiseLoader
         except Exception:
             # rethrow with context
             print('Methods.py: failed to import ImageLoader/NoiseLoader')
@@ -106,30 +107,58 @@ class AugmentationManager:
         if not files:
             return "Ошибка, попробуйте еще раз", 0
 
+        # load all original images first (use ImageLoader) to be able to supply secondary images
+        originals = []
+        for fpath in files:
+            loader_tmp = ImageLoader()
+            img0 = loader_tmp.load(fpath)
+            if img0 is None:
+                print(f"AugmentationManager: failed to load source image '{fpath}'")
+                return "Ошибка, попробуйте еще раз", 0
+            originals.append((fpath, img0))
+
         # create staging directory for atomic behavior: don't write to dst until all succeed
         import tempfile
         staging_root = tempfile.mkdtemp(prefix='augment_staging_')
 
         # process files and write outputs to staging
-        for fpath in files:
+        for idx, (fpath, orig_img) in enumerate(originals):
             try:
-                img = img_loader.load(fpath)
-                if img is None:
-                    errors = True
-                    # abort early: cleanup staging and return
-                    errors = True
-                    break
+                # work on a copy of the original to preserve source
+                img = orig_img.copy()
 
                 applied_names = []
                 # применяем эффекты последовательно; abort on any failure
                 for m in methods:
                     try:
-                        effect = self.noise_loader.create(m)
+                        klass = self.noise_loader.load_class(m)
+                        print(f"AugmentationManager: loaded class for '{m}'")
                     except Exception:
-                        print(f"AugmentationManager: failed to create effect '{m}' for file '{fpath}':")
+                        print(f"AugmentationManager: failed to load class '{m}' for file '{fpath}':")
                         print(traceback.format_exc())
                         errors = True
                         break
+
+                    # prepare kwargs based on constructor signature
+                    ctor_sig = inspect.signature(klass.__init__)
+                    ctor_params = list(ctor_sig.parameters.keys())
+                    kwargs = {}
+                    if 'secondary_image' in ctor_params:
+                        # choose next image as secondary if available, otherwise black image
+                        if len(originals) > 1:
+                            sec_img = originals[(idx + 1) % len(originals)][1]
+                        else:
+                            sec_img = (orig_img * 0).astype(orig_img.dtype)
+                        kwargs['secondary_image'] = sec_img
+
+                    try:
+                        effect = klass(**kwargs) if kwargs else klass()
+                    except Exception:
+                        print(f"AugmentationManager: failed to instantiate effect '{m}' with kwargs {kwargs} for file '{fpath}':")
+                        print(traceback.format_exc())
+                        errors = True
+                        break
+
                     try:
                         img = effect.apply(img)
                         applied_names.append(m)
